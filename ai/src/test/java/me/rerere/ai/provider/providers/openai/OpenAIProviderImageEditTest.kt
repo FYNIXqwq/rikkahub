@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.provider.ImageEditParams
+import me.rerere.ai.provider.ImageGenerationOptions
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.util.json
@@ -97,4 +98,41 @@ class OpenAIProviderImageEditTest {
         assertEquals("https://api.openai.com/v1/images/edits", request.url.toString())
         assertTrue(request.body is MultipartBody)
     }
+
+    @Test
+    fun `conversation file URI is accepted for multipart editing`() = runBlocking {
+        val file = tempFolder.newFile("reference photo.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        provider.editImage(setting(), ImageEditParams(
+            model = Model(modelId = "gpt-image-2.5-sunburst"),
+            prompt = "change the background",
+            images = listOf(file.toURI().toString()),
+            customBody = ImageGenerationOptions(complexity = "high", quality = "high").toImageApiParameters(),
+        )).toList()
+        val body = captured!!.body as MultipartBody
+        val raw = Buffer().also { body.writeTo(it) }.readUtf8()
+        assertTrue(raw.contains("reference photo.png"))
+        assertTrue(raw.contains("name=\"quality\""))
+        assertFalse(raw.contains("name=\"complexity\""))
+        assertFalse(raw.contains("name=\"reasoning\""))
+    }
+
+    @Test
+    fun `remote and inline references use the documented JSON images array`() = runBlocking {
+        val references = listOf("https://example.com/reference.png", "data:image/png;base64,AQID")
+        val result = provider.editImage(setting(), ImageEditParams(
+            model = Model(modelId = "gpt-image-2.5-sunburst"),
+            prompt = "combine the references",
+            images = references,
+            customBody = ImageGenerationOptions(outputFormat = "webp", complexity = "high").toImageApiParameters(),
+        )).toList()
+        val request = captured!!
+        assertEquals("https://api.openai.com/v1/images/edits", request.url.toString())
+        val body = json.parseToJsonElement(Buffer().also { request.body!!.writeTo(it) }.readUtf8()).jsonObject
+        assertEquals(references, body["images"]!!.jsonArray.map { it.jsonObject["image_url"]!!.jsonPrimitive.content })
+        assertFalse("complexity" in body)
+        assertFalse("reasoning" in body)
+        assertEquals("image/webp", result.single().mimeType)
+    }
+
+    private fun setting() = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1", apiKey = "test-key")
 }

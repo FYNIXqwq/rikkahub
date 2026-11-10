@@ -44,6 +44,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import java.net.URI
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -189,7 +190,21 @@ class OpenAIProvider(
         }
 
         val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+        val request = buildImageGenerationRequest(providerSetting, params, key)
+        val items = withContext(Dispatchers.IO) {
+            client.newCall(request).await().use { response ->
+                if (!response.isSuccessful) error("Failed to generate image: ${response.code} ${response.body.string()}")
+                parseImageResponse(response.body.string(), params.customBody.imageOutputFormat())
+            }
+        }
+        items.forEach { emit(it) }
+    }
 
+    internal fun buildImageGenerationRequest(
+        providerSetting: ProviderSetting.OpenAI,
+        params: ImageGenerationParams,
+        key: String,
+    ): Request {
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("model", params.model.modelId)
@@ -208,10 +223,8 @@ class OpenAIProvider(
                 .mergeCustomBody(params.customBody)
         )
 
-        Log.i(TAG, "generateImage: $requestBody")
-
-        val request = Request.Builder()
-            .url("${providerSetting.baseUrl}/images/generations")
+        return Request.Builder()
+            .url("${providerSetting.baseUrl.trimEnd('/')}/images/generations")
             .headers(providerSetting.mergeCustomHeaders(params.customHeaders))
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
@@ -219,15 +232,6 @@ class OpenAIProvider(
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
-        val items = withContext(Dispatchers.IO) {
-            val response = client.newCall(request).await()
-            if (!response.isSuccessful) {
-                error("Failed to generate image: ${response.code} ${response.body?.string()}")
-            }
-            parseImageResponse(response.body.string())
-        }
-
-        items.forEach { emit(it) }
     }
 
     override suspend fun editImage(
@@ -249,6 +253,13 @@ class OpenAIProvider(
             return@flow
         }
 
+        // Conversation references can be file URIs, remote images, or inline images.
+        // Keep multipart for local files; the official JSON edits API accepts URL/data references.
+        if (params.images.any { it.isImageUrlReference() }) {
+            editImageWithJsonReferences(providerSetting, params, key).forEach { emit(it) }
+            return@flow
+        }
+
         val bodyBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", params.model.modelId)
@@ -260,7 +271,7 @@ class OpenAIProvider(
 
         val imageFieldName = if (params.images.size == 1) "image" else "image[]"
         params.images.forEach { path ->
-            val imageFile = File(path)
+            val imageFile = localImageFile(path)
             require(imageFile.exists()) {
                 "Image file does not exist: $path"
             }
@@ -295,7 +306,7 @@ class OpenAIProvider(
             if (!response.isSuccessful) {
                 error("Failed to edit image: ${response.code} ${response.body?.string()}")
             }
-            parseImageResponse(response.body.string())
+            parseImageResponse(response.body.string(), params.customBody.imageOutputFormat())
         }
 
         items.forEach { emit(it) }
@@ -317,16 +328,12 @@ class OpenAIProvider(
                 }
                 putJsonArray("input_references") {
                     params.images.forEach { path ->
-                        val imageFile = File(path)
-                        require(imageFile.exists()) {
-                            "Image file does not exist: $path"
-                        }
                         addJsonObject {
                             put("type", "image_url")
                             putJsonObject("image_url") {
                                 put(
                                     "url",
-                                    "data:${imageFile.imageMediaType()};base64,${Base64.encode(imageFile.readBytes())}"
+                                    imageReferenceUrl(path)
                                 )
                             }
                         }
@@ -349,12 +356,57 @@ class OpenAIProvider(
         if (!response.isSuccessful) {
             error("Failed to edit image: ${response.code} ${response.body?.string()}")
         }
-        parseImageResponse(response.body.string())
+        parseImageResponse(response.body.string(), params.customBody.imageOutputFormat())
     }
 
-    private suspend fun parseImageResponse(bodyStr: String): List<ImageGenerationItem> {
+    private suspend fun editImageWithJsonReferences(
+        setting: ProviderSetting.OpenAI,
+        params: ImageEditParams,
+        key: String,
+    ): List<ImageGenerationItem> = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            params.customBody.forEach { put(it.key, it.value) }
+            put("model", params.model.modelId)
+            put("prompt", params.prompt)
+            put("n", params.numOfImages)
+            if (params.size.isNotBlank()) put("size", params.size)
+            putJsonArray("images") {
+                params.images.forEach { reference ->
+                    addJsonObject { put("image_url", imageReferenceUrl(reference)) }
+                }
+            }
+        }
+        val request = Request.Builder()
+            .url("${setting.baseUrl.trimEnd('/')}/images/edits")
+            .headers(setting.mergeCustomHeaders(params.customHeaders))
+            .addHeader("Authorization", "Bearer $key")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(setting.baseUrl)
+            .build()
+        client.newCall(request).await().use { response ->
+            if (!response.isSuccessful) error("Failed to edit image: ${response.code} ${response.body.string()}")
+            parseImageResponse(response.body.string(), params.customBody.imageOutputFormat())
+        }
+    }
+
+    private fun String.isImageUrlReference() = startsWith("https://") || startsWith("http://") || startsWith("data:image/")
+
+    private fun localImageFile(path: String): File = if (path.startsWith("file:")) File(URI(path)) else File(path)
+
+    private fun imageReferenceUrl(reference: String): String {
+        if (reference.isImageUrlReference()) return reference
+        val file = localImageFile(reference)
+        require(file.isFile) { "Image file does not exist: $reference" }
+        require(file.extension.lowercase() in SUPPORTED_EDIT_IMAGE_EXTENSIONS) { "Unsupported image file type: ${file.extension}" }
+        return "data:${file.imageMediaType()};base64,${Base64.encode(file.readBytes())}"
+    }
+
+    private fun List<me.rerere.ai.provider.CustomBody>.imageOutputFormat(): String =
+        (lastOrNull { it.key == "output_format" }?.value as? JsonPrimitive)?.contentOrNull ?: "png"
+
+    internal suspend fun parseImageResponse(bodyStr: String, fallbackFormat: String = "png"): List<ImageGenerationItem> {
         val body = json.parseToJsonElement(bodyStr).jsonObject
-        val defaultFormat = body["output_format"]?.jsonPrimitive?.contentOrNull ?: "png"
+        val defaultFormat = body["output_format"]?.jsonPrimitive?.contentOrNull ?: fallbackFormat
         val data = body["data"]?.jsonArray ?: error("No data in image response")
         return data.map { element ->
             val obj = element.jsonObject

@@ -1,5 +1,6 @@
 package me.rerere.ai.provider
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -20,7 +21,17 @@ data class ImageGenerationOptions(
     val complexity: String? = null,
     val inputFidelity: String? = null,
     val forceTool: Boolean = false,
+    val executionMode: ImageGenerationExecutionMode = ImageGenerationExecutionMode.AUTO,
 ) {
+    val isImage25: Boolean get() = IMAGE_25_MODEL.matches(model.trim())
+    val usesFixedInputFidelity: Boolean get() = model == "gpt-image-2" || model.startsWith("gpt-image-2-") ||
+        isImage25 || model.startsWith("gpt-image-2.6-")
+
+    fun usesIndependentRequests(provider: ProviderSetting?): Boolean =
+        provider is ProviderSetting.OpenAI && provider.useResponseApi &&
+            (executionMode == ImageGenerationExecutionMode.INDEPENDENT ||
+                (executionMode == ImageGenerationExecutionMode.AUTO && isImage25))
+
     val supportsComplexity: Boolean get() = model.trim().startsWith("gpt-image-2.6-")
     val supportsExtendedQuality: Boolean get() = model.trim().startsWith("gpt-image-2.5-") || supportsComplexity
     val supportsFlexibleSize: Boolean get() = model.trim().startsWith("gpt-image-2")
@@ -91,7 +102,23 @@ data class ImageGenerationOptions(
         }
     }
 
+    /** Images API parameters are deliberately built from a whitelist, never from chat request bodies. */
+    fun toImageApiParameters(): List<CustomBody> {
+        require(validationErrors().isEmpty()) { validationErrors().values.first() }
+        val fields = buildJsonObject {
+            if (quality != "auto") put("quality", quality)
+            if (background != "auto") put("background", background)
+            put("output_format", outputFormat)
+            if (supportsCompression) put("output_compression", outputCompression)
+            if (moderation != "auto") put("moderation", moderation)
+            if (!isImage25) complexity?.let { put("complexity", it) }
+            if (!usesFixedInputFidelity) inputFidelity?.let { put("input_fidelity", it) }
+        }
+        return fields.map { (key, value) -> CustomBody(key, value) }
+    }
+
     companion object {
+        private val IMAGE_25_MODEL = Regex("^gpt-image-2\\.5-(sunburst|flare)(-\\d{4}-\\d{2}-\\d{2})?$")
         val STANDARD_SIZES = listOf("1024x1024", "1536x1024", "1024x1536")
         val EFFORTS = listOf("low", "medium", "high")
         val MODELS = listOf(
@@ -105,6 +132,18 @@ data class ImageGenerationOptions(
             "chatgpt-image-latest",
         )
     }
+}
+
+@Serializable
+enum class ImageGenerationExecutionMode {
+    @SerialName("auto")
+    AUTO,
+
+    @SerialName("hosted")
+    HOSTED,
+
+    @SerialName("independent")
+    INDEPENDENT,
 }
 
 fun Model.hasValidImageGenerationOptions(): Boolean =

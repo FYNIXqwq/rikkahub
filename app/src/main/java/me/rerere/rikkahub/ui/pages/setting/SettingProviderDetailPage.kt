@@ -718,6 +718,7 @@ private fun ModelSettingsForm(
                     BuiltInToolsSettings(
                         tools = model.tools,
                         imageGenerationOptions = model.imageGenerationOptions,
+                        imageGenerationProvider = model.providerOverwrite ?: parentProvider,
                         onUpdateImageGenerationOptions = { onModelChange(model.copy(imageGenerationOptions = it)) },
                         onUpdateTools = { tools ->
                             onModelChange(model.copy(tools = tools))
@@ -1445,6 +1446,7 @@ private fun ModelCard(
 private fun BuiltInToolsSettings(
     tools: Set<BuiltInTools>,
     imageGenerationOptions: ImageGenerationOptions,
+    imageGenerationProvider: ProviderSetting?,
     onUpdateImageGenerationOptions: (ImageGenerationOptions) -> Unit,
     onUpdateTools: (Set<BuiltInTools>) -> Unit
 ) {
@@ -1461,7 +1463,7 @@ private fun BuiltInToolsSettings(
         )
 
         Text(
-            text = "选择模型支持的内置工具，由服务提供商直接执行。图像生成参数用于支持该工具的 Responses API。",
+            text = "选择模型支持的内置工具。图像生成可使用服务端托管，或独立图像请求。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1500,7 +1502,7 @@ private fun BuiltInToolsSettings(
             }
         }
         AnimatedVisibility(visible = BuiltInTools.ImageGeneration in tools) {
-            ImageGenerationToolSettings(imageGenerationOptions, onUpdateImageGenerationOptions)
+            ImageGenerationToolSettings(imageGenerationOptions, onUpdateImageGenerationOptions, imageGenerationProvider)
         }
     }
 }

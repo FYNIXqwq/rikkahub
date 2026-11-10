@@ -25,6 +25,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ImageGenerationOptions
+import me.rerere.ai.provider.ImageGenerationExecutionMode
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.CardGroupScope
 import me.rerere.rikkahub.ui.components.ui.CardGroupValue
@@ -35,8 +37,11 @@ import kotlin.math.roundToInt
 internal fun ImageGenerationToolSettings(
     options: ImageGenerationOptions,
     onChange: (ImageGenerationOptions) -> Unit,
+    providerSetting: ProviderSetting? = null,
 ) {
     val errors = remember(options) { options.validationErrors() }
+    val independent = options.usesIndependentRequests(providerSetting)
+    val independent25 = independent && options.isImage25
     var customModel by rememberSaveable { mutableStateOf(options.model !in ImageGenerationOptions.MODELS) }
     var customSize by rememberSaveable {
         mutableStateOf(options.size != "auto" && options.size !in ImageGenerationOptions.STANDARD_SIZES)
@@ -77,23 +82,46 @@ internal fun ImageGenerationToolSettings(
                 ImageOptionHint("这里选择实际绘图的 GPT Image 模型；聊天模型保持当前选择。")
             }
             formItem {
+                ImageOptionChoice("生图调用方式", options.executionMode.name, listOf(
+                    "AUTO" to "自动 · 2.5 优先独立调用",
+                    "INDEPENDENT" to "独立调用 · 保留聊天思考强度",
+                    "HOSTED" to "服务端托管 · Responses 工具",
+                )) { update(options.copy(executionMode = ImageGenerationExecutionMode.valueOf(it))) }
+                ImageOptionHint(if (independent) {
+                    "聊天模型按原来的思考强度规划，再由同一提供商的 Images API 生成或编辑图片。图像请求不继承聊天思考参数。"
+                } else {
+                    "独立调用需要启用 Responses API 的 OpenAI API Key 提供商，并支持 Images API；账号登录使用服务端托管。"
+                })
+            }
+            formItem {
                 ImageOptionChoice("生成模式", options.action, listOf(
                     "auto" to "自动判断", "generate" to "生成新图", "edit" to "编辑已有图片",
                 )) { update(options.copy(action = it)) }
                 if (options.action == "edit") ImageOptionHint("编辑模式需要在当前聊天中提供参考图片。")
             }
             formItem {
-                ImageOptionChoice("规划复杂度（complexity）", options.complexity ?: "default",
-                    listOf("default" to "默认 · 跟随请求 / 模型") +
-                        ImageGenerationOptions.EFFORTS.map { it to qualityLabel(it) },
+                ImageOptionChoice("规划复杂度（complexity）", if (independent25) "native" else options.complexity ?: "default",
+                    if (independent25) listOf("native" to "2.5 模型默认 · 不发送") else
+                        listOf("default" to if (independent) "生图模型默认" else "默认 · 跟随请求 / 模型") +
+                            ImageGenerationOptions.EFFORTS.map { it to qualityLabel(it) },
+                    enabled = !independent25,
                 ) { update(options.copy(complexity = it.takeUnless { it == "default" })) }
-                ImageOptionHint("控制绘图前的规划投入，与画质分别设置。默认不单独发送；是否支持由生图模型决定。")
+                ImageOptionHint(if (independent25) {
+                    "2.5 独立请求不发送 complexity，聊天模型的 high/max 保持不变。原来的手动值仍会保留。"
+                } else if (independent) {
+                    "只控制图像模型，不影响聊天思考强度；默认使用生图模型自身的设置。"
+                } else {
+                    "控制绘图前的规划投入。不发送时服务端可能继承聊天思考强度；可用档位由生图模型决定。"
+                })
             }
             formItem {
-                ImageOptionChoice("输入保真度（input_fidelity）", options.inputFidelity ?: "default",
+                ImageOptionChoice("输入保真度（input_fidelity）",
+                    if (independent && options.usesFixedInputFidelity) "default" else options.inputFidelity ?: "default",
                     listOf("default" to "模型默认 · 不发送", "low" to "低", "high" to "高"),
+                    enabled = !(independent && options.usesFixedInputFidelity),
                 ) { update(options.copy(inputFidelity = it.takeUnless { it == "default" })) }
                 ImageOptionHint(when {
+                    independent && options.usesFixedInputFidelity -> "独立请求使用该生图模型的默认输入保真度。"
                     options.model == "gpt-image-2" || options.model.startsWith("gpt-image-2-20") ->
                         "GPT Image 2 固定使用高保真，官方接口请保留默认。"
                     options.isMini -> "GPT Image 1 Mini 的官方接口仅支持低保真。"
@@ -149,10 +177,11 @@ internal fun ImageGenerationToolSettings(
                 }
             }
             formItem {
-                ImageOptionChoice("生成过程预览", options.partialImages.toString(), listOf(
+                ImageOptionChoice("生成过程预览", if (independent) "0" else options.partialImages.toString(), listOf(
                     "0" to "关闭 · 仅显示最终图片", "1" to "1 张预览图", "2" to "2 张预览图", "3" to "3 张预览图",
-                )) { update(options.copy(partialImages = it.toInt())) }
-                ImageOptionHint("仅在聊天开启流式输出时生效；预览图会产生额外用量，实际返回数量可能更少。")
+                ), enabled = !independent) { update(options.copy(partialImages = it.toInt())) }
+                ImageOptionHint(if (independent) "独立调用会显示生成状态和最终图片，中途预览图仅在托管模式下提供。" else
+                    "仅在聊天开启流式输出时生效；预览图会产生额外用量，实际返回数量可能更少。")
             }
         }
 
@@ -184,18 +213,20 @@ private fun ImageOptionChoice(
     label: String,
     value: String,
     choices: List<Pair<String, String>>,
+    enabled: Boolean = true,
     onChange: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+    ExposedDropdownMenuBox(expanded = expanded && enabled, onExpandedChange = { if (enabled) expanded = it }) {
         OutlinedTextField(
             value = choices.firstOrNull { it.first == value }?.second ?: value,
             onValueChange = {}, readOnly = true, singleLine = true,
+            enabled = enabled,
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+            modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled),
         )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        ExposedDropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             choices.forEach { (key, text) ->
                 DropdownMenuItem(text = { Text(text) }, onClick = { expanded = false; onChange(key) })
             }

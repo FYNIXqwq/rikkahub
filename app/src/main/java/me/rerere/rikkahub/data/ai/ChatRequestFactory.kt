@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.agent.AgentHooks
 import me.rerere.ai.agent.AgentRequest
 import me.rerere.ai.agent.RetryPolicy
@@ -15,6 +16,13 @@ import me.rerere.ai.agent.withRetry
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.CustomBody
+import me.rerere.ai.provider.ImageGenerationExecutionMode
+import me.rerere.ai.provider.IndependentImageToolSession
+import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.ImageEditParams
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
@@ -43,6 +51,7 @@ import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryFile
@@ -83,6 +92,7 @@ class ChatRequestFactory(
     private val memoryRepository: MemoryRepository,
     templateTransformer: TemplateTransformer,
     workspaceRepository: WorkspaceRepository,
+    private val filesManager: FilesManager,
 ) {
     private val inputTransformers: List<InputMessageTransformer> = listOf(
         TimeReminderTransformer,
@@ -138,6 +148,43 @@ class ChatRequestFactory(
         takePendingParts: suspend () -> List<UIMessagePart> = { emptyList() },
         pauseAfterTools: (UIMessage) -> Boolean = { false },
     ): Pair<AgentRequest, AgentHooks> {
+        val imageOptions = turn.model.imageGenerationOptions
+        val imageEnabled = BuiltInTools.ImageGeneration in turn.model.tools
+        val independent = imageEnabled && imageOptions.usesIndependentRequests(turn.providerSetting)
+        check(!imageEnabled || imageOptions.executionMode != ImageGenerationExecutionMode.INDEPENDENT || independent) {
+            "独立生图需要支持 Images API 的 OpenAI API Key 提供商，并启用 Responses API"
+        }
+        val imageSession = if (independent) IndependentImageToolSession(imageOptions, messages) { plan ->
+            val imageProvider = providerManager.getProviderByType(turn.providerSetting)
+            val imageModel = turn.model.copy(modelId = imageOptions.model, type = ModelType.IMAGE, tools = emptySet())
+            val headers = turn.assistant.customHeaders + turn.model.customHeaders
+            // A new image request contains only image options. Never forward the chat custom body/reasoning.
+            val output = if (plan.referenceImages.isEmpty()) {
+                imageProvider.generateImage(turn.providerSetting, ImageGenerationParams(
+                    model = imageModel, prompt = plan.prompt, size = imageOptions.size, partialImages = 0,
+                    customHeaders = headers, customBody = imageOptions.toImageApiParameters(),
+                ))
+            } else {
+                imageProvider.editImage(turn.providerSetting, ImageEditParams(
+                    model = imageModel, prompt = plan.prompt, images = plan.referenceImages,
+                    size = imageOptions.size, partialImages = 0, customHeaders = headers,
+                    customBody = imageOptions.toImageApiParameters(),
+                ))
+            }
+            val images = mutableListOf<UIMessagePart.Image>()
+            output.collect { item ->
+                if (!item.partial) {
+                    val dataUrl = item.data.takeIf { it.startsWith("data:image/") }
+                        ?: "data:${item.mimeType};base64,${item.data}"
+                    val image = filesManager.persistGeneratedImage(UIMessagePart.Image(dataUrl))
+                        ?: error("Image API returned an empty image")
+                    images += image
+                }
+            }
+            check(images.isNotEmpty()) { "Image API returned no final image" }
+            listOf(UIMessagePart.Text("Image generated successfully and displayed to the user.")) + images
+        } else null
+        val tools = turn.tools + listOfNotNull(imageSession?.tool)
         val request = AgentRequest(
             provider = usageRecorder.wrap(
                 providerManager.getProviderByType(turn.providerSetting),
@@ -145,14 +192,18 @@ class ChatRequestFactory(
             ),
             providerSetting = turn.providerSetting,
             messages = messages,
-            tools = turn.tools,
+            tools = tools,
             stream = turn.assistant.streamOutput,
             retry = turn.settings.retryPolicy(),
         )
         val hooks = object : AgentHooks {
             override suspend fun prepareStep(messages: List<UIMessage>): StepRequest {
                 Log.i(TAG, "prepareStep: ${turn.model.id}")
-                return buildStep(turn, messages, processingStatus)
+                imageSession?.observe(messages)
+                val step = buildStep(turn, messages, processingStatus, tools, imageSession)
+                return if (imageSession != null) StepRequest(
+                    step.messages, imageSession.prepareParams(step.params),
+                ) else step
             }
 
             override suspend fun previewStep(message: UIMessage, newPartsFrom: Int) =
@@ -202,7 +253,18 @@ class ChatRequestFactory(
         messages: List<UIMessage>,
         compressPrompt: String,
     ): String {
-        val (requestMessages, params) = buildStep(turn, messages)
+        val independent = BuiltInTools.ImageGeneration in turn.model.tools &&
+            turn.model.imageGenerationOptions.usesIndependentRequests(turn.providerSetting)
+        val imageSession = if (independent) IndependentImageToolSession(turn.model.imageGenerationOptions, messages) {
+            error("Compression must not execute image generation")
+        } else null
+        val step = buildStep(turn, messages, tools = turn.tools + listOfNotNull(imageSession?.tool), imageSession = imageSession)
+        val requestMessages = step.messages
+        val params = imageSession?.prepareParams(step.params)?.let {
+            // The summary must remain text even when the chat's image tool is configured as forced.
+            it.copy(customBody = it.customBody.filterNot { body -> body.key == "tool_choice" } +
+                CustomBody("tool_choice", JsonPrimitive("none")))
+        } ?: step.params
         // 压缩指令不经过输入转换器，模板转换器会把其中的花括号当成模板语法
         val result = withRetry(
             policy = turn.settings.retryPolicy(),
@@ -228,6 +290,8 @@ class ChatRequestFactory(
         turn: ChatTurnContext,
         messages: List<UIMessage>,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        tools: List<Tool> = turn.tools,
+        imageSession: IndependentImageToolSession? = null,
     ): StepRequest {
         val assistant = turn.assistant
         val requestMessages = buildList {
@@ -248,7 +312,7 @@ class ChatRequestFactory(
                     append(buildMemoryPrompt(turn.memories))
                 }
                 // 工具prompt
-                turn.tools.forEach { tool ->
+                tools.forEach { tool ->
                     appendLine()
                     append(tool.systemPrompt(turn.model, messages))
                 }
@@ -257,7 +321,7 @@ class ChatRequestFactory(
                 add(UIMessage.system(prompt = system).copy(isSynthetic = true))
             }
             addAll(messages.limitContext(assistant.contextMessageLimit).withContinuationHint())
-        }.transforms(
+        }.let { imageSession?.labelReferences(it) ?: it }.transforms(
             transformers = inputTransformers,
             context = context,
             model = turn.model,
@@ -271,7 +335,7 @@ class ChatRequestFactory(
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
-            tools = turn.tools,
+            tools = tools,
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {
                 addAll(assistant.customHeaders)
@@ -341,7 +405,7 @@ internal fun backgroundTextGenerationParams(
     sessionId: Uuid,
     reasoningLevel: ReasoningLevel = ReasoningLevel.AUTO,
 ): TextGenerationParams = TextGenerationParams(
-    model = model,
+    model = model.copy(tools = model.tools - BuiltInTools.ImageGeneration),
     reasoningLevel = reasoningLevel,
     customHeaders = model.customHeaders,
     customBody = model.customBodies,

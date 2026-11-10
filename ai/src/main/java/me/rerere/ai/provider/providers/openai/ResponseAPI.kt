@@ -31,6 +31,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.IndependentImageToolSession
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
@@ -236,7 +237,7 @@ class ResponseAPI(
         params: TextGenerationParams,
         stream: Boolean
     ): JsonObject {
-        return buildJsonObject {
+        val body = buildJsonObject {
             put("model", params.model.modelId)
             put("stream", stream)
             put("store", false)
@@ -332,7 +333,12 @@ class ResponseAPI(
             if (BuiltInTools.ImageGeneration in params.model.tools && params.model.imageGenerationOptions.forceTool) {
                 put("tool_choice", buildJsonObject { put("type", "image_generation") })
             }
-        }.mergeCustomBody(params.customBody)
+        }
+        val merged = body.mergeCustomBody(params.customBody)
+        val independentTool = (body["tools"] as? JsonArray)?.filterIsInstance<JsonObject>()?.firstOrNull {
+            it["type"] == JsonPrimitive("function") && it["name"] == JsonPrimitive(IndependentImageToolSession.NAME)
+        }
+        return if (independentTool != null) merged.withIndependentImageTool(independentTool) else merged
     }
 
     internal fun buildMessages(messages: List<UIMessage>) = buildJsonArray {
@@ -717,6 +723,23 @@ class ResponseAPI(
         )
     }
 }
+
+/** A custom body must not accidentally reattach the hosted image tool and its reasoning inheritance. */
+internal fun JsonObject.withIndependentImageTool(definition: JsonObject): JsonObject = JsonObject(toMutableMap().apply {
+    val tools = (get("tools") as? JsonArray).orEmpty().filterNot { element ->
+        val tool = element as? JsonObject
+        tool?.get("type") == JsonPrimitive("image_generation") ||
+            (tool?.get("type") == JsonPrimitive("function") &&
+                tool["name"] == JsonPrimitive(IndependentImageToolSession.NAME))
+    }
+    put("tools", JsonArray(tools + definition))
+    if ((get("tool_choice") as? JsonObject)?.get("type") == JsonPrimitive("image_generation")) {
+        put("tool_choice", buildJsonObject {
+            put("type", "function")
+            put("name", IndependentImageToolSession.NAME)
+        })
+    }
+})
 
 internal fun JsonObject.imageGenerationMimeType(): String = when (
     get("output_format")?.jsonPrimitive?.contentOrNull
