@@ -727,7 +727,7 @@ class ChatService(
             // 上一段是压缩后新开的；摘要加系统提示词本身就超过阈值时再压也没用，这一轮不再压缩
             var afterCompression = false
             var compressionUseless = false
-            try {
+            withGenerationCleanup(block = {
                 while (true) {
                     val replyNodeId = target.nodeId
                     val freshReply = afterCompression
@@ -781,11 +781,11 @@ class ChatService(
                     target = replyTargetOf(session.state.value, regenerateNodeId = null)
                     session.replyMessageId.value = target.continuedMessageId
                 }
-            } finally {
+            }, cleanup = {
                 withContext(NonCancellable) {
                     session.processingStatus.value = null
                     // 可能被取消了，或者意外结束，兜底保存
-                    val finished = session.finishGeneration()
+                    val finished = session.finishGeneration(filesManager::persistGeneratedImage)
                     // 生成结束：取消 Live Update 通知，后台时发送完成通知
                     appEventBus.emit(
                         AppEvent.ChatGenerationEnded(
@@ -796,7 +796,7 @@ class ChatService(
                         )
                     )
                 }
-            }
+            })
 
             val reason = checkNotNull(finishReason)
             // 等待审批时这一轮还没结束，标题、建议和记忆整理等审批之后再做
@@ -1055,7 +1055,7 @@ class ChatService(
         val reply = session.state.value.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
         session.autoCompressedReplyId = reply?.id
         // 压缩前把已经生成的内容存下来
-        session.finishGeneration()
+        session.finishGeneration(filesManager::persistGeneratedImage)
         session.setActivity(SessionActivity.Compressing)
         session.processingStatus.value = context.getString(R.string.chat_page_compressing)
         return try {

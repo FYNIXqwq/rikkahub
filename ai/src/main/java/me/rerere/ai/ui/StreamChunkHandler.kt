@@ -293,7 +293,7 @@ class StreamChunkHandler(private val model: Model? = null) {
                 if (index == null || parts.getOrNull(index) !is UIMessagePart.Image) {
                     copy(
                         parts = parts + UIMessagePart.Image(
-                            url = "data:image/png;base64,${chunk.data}",
+                            url = "data:${chunk.mimeType ?: "image/png"};base64,${chunk.data}",
                             metadata = chunk.metadata,
                         )
                     ).also { imagePartIndexes[chunk.id] = parts.size }
@@ -302,7 +302,8 @@ class StreamChunkHandler(private val model: Model? = null) {
                         val image = get(index) as UIMessagePart.Image
                         // Snapshot 是一张完整的可渲染图片，只替换 data URL 的数据部分；
                         // 与 ImageDelta 不同，它不会把数据追加到上一帧之后。
-                        val dataUrlPrefix = image.url.substringBefore(",").takeIf { it.startsWith("data:") }
+                        val dataUrlPrefix = chunk.mimeType?.let { "data:$it;base64" }
+                            ?: image.url.substringBefore(",").takeIf { it.startsWith("data:") }
                             ?: "data:image/png;base64"
                         set(index, image.copy(
                             url = "$dataUrlPrefix,${chunk.data}",

@@ -140,6 +140,7 @@ sealed class StreamChunk {
         val id: String,
         val data: String,
         val metadata: JsonObject? = null,
+        val mimeType: String? = null,
     ) : StreamChunk()
 
     @Serializable
