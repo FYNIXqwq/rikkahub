@@ -92,6 +92,8 @@ import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.filterByKeywords
+import me.rerere.ai.provider.ImageGenerationOptions
+import me.rerere.ai.provider.hasValidImageGenerationOptions
 import me.rerere.ai.provider.supportsQuota
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -715,6 +717,8 @@ private fun ModelSettingsForm(
                     // 内置工具页面
                     BuiltInToolsSettings(
                         tools = model.tools,
+                        imageGenerationOptions = model.imageGenerationOptions,
+                        onUpdateImageGenerationOptions = { onModelChange(model.copy(imageGenerationOptions = it)) },
                         onUpdateTools = { tools ->
                             onModelChange(model.copy(tools = tools))
                         }
@@ -882,10 +886,11 @@ private fun AddModelButton(
                         }
                         Button(
                             onClick = {
-                                if (modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank()) {
+                                if (modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank() && modelState.hasValidImageGenerationOptions()) {
                                     dialogState.confirm()
                                 }
                             },
+                            enabled = modelState.hasValidImageGenerationOptions(),
                         ) {
                             Text(stringResource(R.string.setting_provider_page_add))
                         }
@@ -1342,10 +1347,11 @@ private fun ModelCard(
                         }
                         Button(
                             onClick = {
-                                if (editingModel.displayName.isNotBlank()) {
+                                if (editingModel.displayName.isNotBlank() && editingModel.hasValidImageGenerationOptions()) {
                                     dialogState.confirm()
                                 }
                             },
+                            enabled = editingModel.hasValidImageGenerationOptions(),
                         ) {
                             Text(stringResource(R.string.confirm))
                         }
@@ -1438,6 +1444,8 @@ private fun ModelCard(
 @Composable
 private fun BuiltInToolsSettings(
     tools: Set<BuiltInTools>,
+    imageGenerationOptions: ImageGenerationOptions,
+    onUpdateImageGenerationOptions: (ImageGenerationOptions) -> Unit,
     onUpdateTools: (Set<BuiltInTools>) -> Unit
 ) {
     Column(
@@ -1453,7 +1461,7 @@ private fun BuiltInToolsSettings(
         )
 
         Text(
-            text = stringResource(R.string.setting_page_built_in_tools_desc),
+            text = "选择模型支持的内置工具，由服务提供商直接执行。图像生成参数用于支持该工具的 Responses API。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1490,6 +1498,9 @@ private fun BuiltInToolsSettings(
                     headlineContent = { Text(title) },
                 )
             }
+        }
+        AnimatedVisibility(visible = BuiltInTools.ImageGeneration in tools) {
+            ImageGenerationToolSettings(imageGenerationOptions, onUpdateImageGenerationOptions)
         }
     }
 }

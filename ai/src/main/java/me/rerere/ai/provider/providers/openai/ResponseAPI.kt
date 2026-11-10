@@ -323,14 +323,14 @@ class ResponseAPI(
                             BuiltInTools.UrlContext -> {} // not supported
 
                             BuiltInTools.ImageGeneration -> {
-                                add(buildJsonObject {
-                                    put("type", "image_generation")
-                                    put("model", "gpt-image-2.5-sunburst")
-                                })
+                                add(params.model.imageGenerationOptions.toToolJson(stream))
                             }
                         }
                     }
                 }
+            }
+            if (BuiltInTools.ImageGeneration in params.model.tools && params.model.imageGenerationOptions.forceTool) {
+                put("tool_choice", buildJsonObject { put("type", "image_generation") })
             }
         }.mergeCustomBody(params.customBody)
     }
