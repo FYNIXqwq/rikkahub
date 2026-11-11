@@ -100,7 +100,7 @@ class ImageGenerationOptionsTest {
 
     @Test
     fun `explicit complexity and fidelity survive defaults custom models and settings reload`() {
-        for (imageModel in listOf("gpt-image-2.5-sunburst", "custom-image-model")) {
+        for (imageModel in listOf("gpt-image-2.6-sunburst", "custom-image-model")) {
             val options = ImageGenerationOptions(
                 model = imageModel,
                 complexity = "medium",
@@ -116,6 +116,33 @@ class ImageGenerationOptionsTest {
         val defaults = ImageGenerationOptions().toToolJson(true)
         assertFalse(defaults.containsKey("complexity"))
         assertFalse(defaults.containsKey("input_fidelity"))
+    }
+
+    @Test
+    fun `image 2 and 25 omit saved complexity in hosted and independent requests without losing the setting`() {
+        for (imageModel in listOf(
+            "gpt-image-2",
+            "gpt-image-2-2026-04-21",
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-flare-2026-09-08"
+        )) {
+            for (effort in ImageGenerationOptions.EFFORTS) {
+                val options = ImageGenerationOptions(model = imageModel, complexity = effort)
+                val restored = json.decodeFromString<ImageGenerationOptions>(json.encodeToString(options))
+                assertTrue(restored.usesFixedComplexity)
+                assertFalse(restored.toImageApiParameters().any { it.key == "complexity" })
+                for (stream in listOf(false, true)) {
+                    val tool = request(Model(
+                        tools = setOf(BuiltInTools.ImageGeneration),
+                        imageGenerationOptions = restored
+                    ), stream)["tools"]!!.jsonArray.single().jsonObject
+                    assertFalse(tool.containsKey("complexity"))
+                }
+                assertEquals(effort, restored.complexity)
+                assertEquals(effort, restored.copy(model = "gpt-image-2.6-sunburst")
+                    .toToolJson(true)["complexity"]!!.jsonPrimitive.content)
+            }
+        }
     }
 
     @Test

@@ -41,7 +41,7 @@ internal fun ImageGenerationToolSettings(
 ) {
     val errors = remember(options) { options.validationErrors() }
     val independent = options.usesIndependentRequests(providerSetting)
-    val independent25 = independent && options.isImage25
+    val fixedComplexity = options.usesFixedComplexity
     var customModel by rememberSaveable { mutableStateOf(options.model !in ImageGenerationOptions.MODELS) }
     var customSize by rememberSaveable {
         mutableStateOf(options.size != "auto" && options.size !in ImageGenerationOptions.STANDARD_SIZES)
@@ -83,7 +83,7 @@ internal fun ImageGenerationToolSettings(
             }
             formItem {
                 ImageOptionChoice("生图调用方式", options.executionMode.name, listOf(
-                    "AUTO" to "自动 · 2.5 优先独立调用",
+                    "AUTO" to "自动 · Image 2 / 2.5 优先独立调用",
                     "INDEPENDENT" to "独立调用 · 保留聊天思考强度",
                     "HOSTED" to "服务端托管 · Responses 工具",
                 )) { update(options.copy(executionMode = ImageGenerationExecutionMode.valueOf(it))) }
@@ -100,14 +100,16 @@ internal fun ImageGenerationToolSettings(
                 if (options.action == "edit") ImageOptionHint("编辑模式需要在当前聊天中提供参考图片。")
             }
             formItem {
-                ImageOptionChoice("规划复杂度（complexity）", if (independent25) "native" else options.complexity ?: "default",
-                    if (independent25) listOf("native" to "2.5 模型默认 · 不发送") else
+                ImageOptionChoice("规划复杂度（complexity）", if (fixedComplexity) "native" else options.complexity ?: "default",
+                    if (fixedComplexity) listOf("native" to "模型默认 · 不发送") else
                         listOf("default" to if (independent) "生图模型默认" else "默认 · 跟随请求 / 模型") +
                             ImageGenerationOptions.EFFORTS.map { it to qualityLabel(it) },
-                    enabled = !independent25,
+                    enabled = !fixedComplexity,
                 ) { update(options.copy(complexity = it.takeUnless { it == "default" })) }
-                ImageOptionHint(if (independent25) {
-                    "2.5 独立请求不发送 complexity，聊天模型的 high/max 保持不变。原来的手动值仍会保留。"
+                ImageOptionHint(if (fixedComplexity && independent) {
+                    "Image 2 / 2.5 不发送 complexity，独立调用保留聊天模型的 high/max。原来的手动值仍会保留。"
+                } else if (fixedComplexity) {
+                    "Image 2 / 2.5 不发送 complexity。托管模式仍可能继承聊天思考强度；需要分离时请选择独立调用。"
                 } else if (independent) {
                     "只控制图像模型，不影响聊天思考强度；默认使用生图模型自身的设置。"
                 } else {

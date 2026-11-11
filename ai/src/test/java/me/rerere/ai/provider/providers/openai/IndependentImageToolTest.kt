@@ -57,6 +57,12 @@ class IndependentImageToolTest {
     @Test
     fun `auto mode separates image 25 for API key Responses providers and hosted mode remains available`() {
         assertTrue(ImageGenerationOptions().usesIndependentRequests(setting))
+        for (imageModel in listOf("gpt-image-2", "gpt-image-2-2026-04-21")) {
+            assertTrue(ImageGenerationOptions(model = imageModel).usesIndependentRequests(setting))
+            assertFalse(ImageGenerationOptions(model = imageModel, executionMode = ImageGenerationExecutionMode.HOSTED)
+                .usesIndependentRequests(setting))
+        }
+        assertFalse(ImageGenerationOptions(model = "gpt-image-2-custom").usesIndependentRequests(setting))
         assertFalse(ImageGenerationOptions().usesIndependentRequests(setting.copy(useResponseApi = false)))
         assertFalse(ImageGenerationOptions().usesIndependentRequests(ProviderSetting.Google()))
         assertFalse(ImageGenerationOptions(executionMode = ImageGenerationExecutionMode.HOSTED).usesIndependentRequests(setting))

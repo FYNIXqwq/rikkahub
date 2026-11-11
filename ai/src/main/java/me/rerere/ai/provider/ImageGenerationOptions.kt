@@ -23,14 +23,16 @@ data class ImageGenerationOptions(
     val forceTool: Boolean = false,
     val executionMode: ImageGenerationExecutionMode = ImageGenerationExecutionMode.AUTO,
 ) {
+    val isImage2: Boolean get() = IMAGE_2_MODEL.matches(model.trim())
     val isImage25: Boolean get() = IMAGE_25_MODEL.matches(model.trim())
-    val usesFixedInputFidelity: Boolean get() = model == "gpt-image-2" || model.startsWith("gpt-image-2-") ||
+    val usesFixedComplexity: Boolean get() = isImage2 || isImage25
+    val usesFixedInputFidelity: Boolean get() = isImage2 ||
         isImage25 || model.startsWith("gpt-image-2.6-")
 
     fun usesIndependentRequests(provider: ProviderSetting?): Boolean =
         provider is ProviderSetting.OpenAI && provider.useResponseApi &&
             (executionMode == ImageGenerationExecutionMode.INDEPENDENT ||
-                (executionMode == ImageGenerationExecutionMode.AUTO && isImage25))
+                (executionMode == ImageGenerationExecutionMode.AUTO && usesFixedComplexity))
 
     val supportsComplexity: Boolean get() = model.trim().startsWith("gpt-image-2.6-")
     val supportsExtendedQuality: Boolean get() = model.trim().startsWith("gpt-image-2.5-") || supportsComplexity
@@ -97,7 +99,7 @@ data class ImageGenerationOptions(
             if (supportsCompression && outputCompression != 100) put("output_compression", outputCompression)
             if (stream && partialImages > 0) put("partial_images", partialImages)
             if (moderation != "auto") put("moderation", moderation)
-            complexity?.let { put("complexity", it) }
+            if (!usesFixedComplexity) complexity?.let { put("complexity", it) }
             inputFidelity?.let { put("input_fidelity", it) }
         }
     }
@@ -111,13 +113,14 @@ data class ImageGenerationOptions(
             put("output_format", outputFormat)
             if (supportsCompression) put("output_compression", outputCompression)
             if (moderation != "auto") put("moderation", moderation)
-            if (!isImage25) complexity?.let { put("complexity", it) }
+            if (!usesFixedComplexity) complexity?.let { put("complexity", it) }
             if (!usesFixedInputFidelity) inputFidelity?.let { put("input_fidelity", it) }
         }
         return fields.map { (key, value) -> CustomBody(key, value) }
     }
 
     companion object {
+        private val IMAGE_2_MODEL = Regex("^gpt-image-2(-\\d{4}-\\d{2}-\\d{2})?$")
         private val IMAGE_25_MODEL = Regex("^gpt-image-2\\.5-(sunburst|flare)(-\\d{4}-\\d{2}-\\d{2})?$")
         val STANDARD_SIZES = listOf("1024x1024", "1536x1024", "1024x1536")
         val EFFORTS = listOf("low", "medium", "high")
