@@ -41,6 +41,7 @@ internal fun ImageGenerationToolSettings(
 ) {
     val errors = remember(options) { options.validationErrors() }
     val independent = options.usesIndependentRequests(providerSetting)
+    val twoStep = options.usesTwoStepRequests(providerSetting)
     val fixedComplexity = options.usesFixedComplexity
     var customModel by rememberSaveable { mutableStateOf(options.model !in ImageGenerationOptions.MODELS) }
     var customSize by rememberSaveable {
@@ -83,14 +84,17 @@ internal fun ImageGenerationToolSettings(
             }
             formItem {
                 ImageOptionChoice("生图调用方式", options.executionMode.name, listOf(
-                    "AUTO" to "自动 · Image 2 / 2.5 优先独立调用",
+                    "AUTO" to "自动 · Image 2 / 2.5 两步原生",
+                    "TWO_STEP" to "两步原生 · 先规划再生图",
                     "INDEPENDENT" to "独立调用 · 保留聊天思考强度",
                     "HOSTED" to "服务端托管 · Responses 工具",
                 )) { update(options.copy(executionMode = ImageGenerationExecutionMode.valueOf(it))) }
-                ImageOptionHint(if (independent) {
+                ImageOptionHint(if (twoStep) {
+                    "先按聊天思考强度规划，再用原生图像工具生图；生图这一步不指定思考强度。支持预览图，会增加一次请求；需要模型支持结构化输出。"
+                } else if (independent) {
                     "聊天模型按原来的思考强度规划，再由同一提供商的 Images API 生成或编辑图片。图像请求不继承聊天思考参数。"
                 } else {
-                    "独立调用需要启用 Responses API 的 OpenAI API Key 提供商，并支持 Images API；账号登录使用服务端托管。"
+                    "两步原生和独立调用需要启用 Responses API 的 OpenAI API Key 提供商；独立调用还需要 Images API。"
                 })
             }
             formItem {
@@ -102,15 +106,17 @@ internal fun ImageGenerationToolSettings(
             formItem {
                 ImageOptionChoice("规划复杂度（complexity）", if (fixedComplexity) "native" else options.complexity ?: "default",
                     if (fixedComplexity) listOf("native" to "模型默认 · 不发送") else
-                        listOf("default" to if (independent) "生图模型默认" else "默认 · 跟随请求 / 模型") +
+                        listOf("default" to if (independent || twoStep) "生图模型默认" else "默认 · 跟随请求 / 模型") +
                             ImageGenerationOptions.EFFORTS.map { it to qualityLabel(it) },
                     enabled = !fixedComplexity,
                 ) { update(options.copy(complexity = it.takeUnless { it == "default" })) }
-                ImageOptionHint(if (fixedComplexity && independent) {
+                ImageOptionHint(if (fixedComplexity && twoStep) {
+                    "Image 2 / 2.5 不发送 complexity。"
+                } else if (fixedComplexity && independent) {
                     "Image 2 / 2.5 不发送 complexity，独立调用保留聊天模型的 high/max。原来的手动值仍会保留。"
                 } else if (fixedComplexity) {
-                    "Image 2 / 2.5 不发送 complexity。托管模式仍可能继承聊天思考强度；需要分离时请选择独立调用。"
-                } else if (independent) {
+                    "Image 2 / 2.5 不发送 complexity。单次托管仍可能继承聊天思考强度；可选择两步原生调用。"
+                } else if (independent || twoStep) {
                     "只控制图像模型，不影响聊天思考强度；默认使用生图模型自身的设置。"
                 } else {
                     "控制绘图前的规划投入。不发送时服务端可能继承聊天思考强度；可用档位由生图模型决定。"
@@ -118,12 +124,12 @@ internal fun ImageGenerationToolSettings(
             }
             formItem {
                 ImageOptionChoice("输入保真度（input_fidelity）",
-                    if (independent && options.usesFixedInputFidelity) "default" else options.inputFidelity ?: "default",
+                    if ((independent || twoStep) && options.usesFixedInputFidelity) "default" else options.inputFidelity ?: "default",
                     listOf("default" to "模型默认 · 不发送", "low" to "低", "high" to "高"),
-                    enabled = !(independent && options.usesFixedInputFidelity),
+                    enabled = !((independent || twoStep) && options.usesFixedInputFidelity),
                 ) { update(options.copy(inputFidelity = it.takeUnless { it == "default" })) }
                 ImageOptionHint(when {
-                    independent && options.usesFixedInputFidelity -> "独立请求使用该生图模型的默认输入保真度。"
+                    (independent || twoStep) && options.usesFixedInputFidelity -> "使用该生图模型的默认输入保真度。"
                     options.model == "gpt-image-2" || options.model.startsWith("gpt-image-2-20") ->
                         "GPT Image 2 固定使用高保真，官方接口请保留默认。"
                     options.isMini -> "GPT Image 1 Mini 的官方接口仅支持低保真。"

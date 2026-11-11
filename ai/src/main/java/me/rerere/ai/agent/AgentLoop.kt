@@ -56,7 +56,7 @@ internal class AgentLoop(
                 if (pending.isNotEmpty()) return finish(AgentFinishReason.AwaitingApproval(pending))
                 executeTools()
                 toolsExecuted = true
-            } else if (current != null && steps > 0) {
+            } else if (current != null && steps > 0 && !hooks.shouldContinue(current)) {
                 return finish(AgentFinishReason.Completed)
             }
             if (steps == request.maxSteps) return finish(AgentFinishReason.StepLimitReached)

@@ -31,12 +31,14 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.ImageGenerationPhase
 import me.rerere.ai.provider.IndependentImageToolSession
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.TextGenerationResult
+import me.rerere.ai.provider.TwoStepImageSession
 import me.rerere.ai.provider.providers.PartGroup
 import me.rerere.ai.provider.providers.groupPartsByToolBoundary
 import me.rerere.ai.provider.stream.SseEvent
@@ -335,6 +337,9 @@ class ResponseAPI(
             }
         }
         val merged = body.mergeCustomBody(params.customBody)
+        if (params.imageGenerationPhase != null) {
+            return merged.withImageGenerationPhase(body, params, stream)
+        }
         val independentTool = (body["tools"] as? JsonArray)?.filterIsInstance<JsonObject>()?.firstOrNull {
             it["type"] == JsonPrimitive("function") && it["name"] == JsonPrimitive(IndependentImageToolSession.NAME)
         }
@@ -723,6 +728,49 @@ class ResponseAPI(
         )
     }
 }
+
+/** Enforce the two stages after merging custom bodies so render requests cannot inherit an explicit effort. */
+internal fun JsonObject.withImageGenerationPhase(
+    base: JsonObject,
+    params: TextGenerationParams,
+    stream: Boolean,
+): JsonObject = JsonObject(toMutableMap().apply {
+    // Stage controls must survive advanced custom-body overrides.
+    put("input", base.getValue("input"))
+    put("model", base.getValue("model"))
+    base["instructions"]?.let { put("instructions", it) }
+    remove("response_format")
+    val text = (get("text") as? JsonObject).orEmpty().toMutableMap()
+    when (params.imageGenerationPhase) {
+        ImageGenerationPhase.PLAN -> {
+            val tools = (base["tools"] as? JsonArray).orEmpty().filterNot {
+                (it as? JsonObject)?.get("type") == JsonPrimitive("image_generation")
+            }
+            if (tools.isEmpty()) {
+                remove("tools")
+                remove("tool_choice")
+            } else {
+                put("tools", JsonArray(tools))
+                put("tool_choice", JsonPrimitive("auto"))
+            }
+            text["format"] = TwoStepImageSession.planningFormat
+        }
+        ImageGenerationPhase.RENDER -> {
+            val reasoning = (get("reasoning") as? JsonObject).orEmpty() - "effort"
+            if (reasoning.isEmpty()) remove("reasoning") else put("reasoning", JsonObject(reasoning))
+            remove("reasoning_effort")
+            remove("complexity")
+            val options = params.model.imageGenerationOptions
+            val tool = options.toToolJson(stream).toMutableMap()
+            if (options.usesFixedInputFidelity) tool.remove("input_fidelity")
+            put("tools", JsonArray(listOf(JsonObject(tool))))
+            put("tool_choice", buildJsonObject { put("type", "image_generation") })
+            text["format"] = buildJsonObject { put("type", "text") }
+        }
+        null -> Unit
+    }
+    put("text", JsonObject(text))
+})
 
 /** A custom body must not accidentally reattach the hosted image tool and its reasoning inheritance. */
 internal fun JsonObject.withIndependentImageTool(definition: JsonObject): JsonObject = JsonObject(toMutableMap().apply {

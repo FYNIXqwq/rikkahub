@@ -49,6 +49,9 @@ interface AgentHooks {
      */
     suspend fun finishStep(message: UIMessage, newPartsFrom: Int): UIMessage = message
 
+    /** Continue a completed text step into another model step, still subject to [AgentRequest.maxSteps]. */
+    suspend fun shouldContinue(message: UIMessage): Boolean = false
+
     /**
      * 请求模型之前、[prepareStep] 之前调用，返回要追加到本轮助手消息末尾的 part，通常是 [UIMessagePart.Notice]。
      *

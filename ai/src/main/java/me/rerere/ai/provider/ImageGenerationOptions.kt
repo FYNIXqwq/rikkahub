@@ -31,7 +31,11 @@ data class ImageGenerationOptions(
 
     fun usesIndependentRequests(provider: ProviderSetting?): Boolean =
         provider is ProviderSetting.OpenAI && provider.useResponseApi &&
-            (executionMode == ImageGenerationExecutionMode.INDEPENDENT ||
+            executionMode == ImageGenerationExecutionMode.INDEPENDENT
+
+    fun usesTwoStepRequests(provider: ProviderSetting?): Boolean =
+        provider is ProviderSetting.OpenAI && provider.useResponseApi &&
+            (executionMode == ImageGenerationExecutionMode.TWO_STEP ||
                 (executionMode == ImageGenerationExecutionMode.AUTO && usesFixedComplexity))
 
     val supportsComplexity: Boolean get() = model.trim().startsWith("gpt-image-2.6-")
@@ -141,6 +145,9 @@ data class ImageGenerationOptions(
 enum class ImageGenerationExecutionMode {
     @SerialName("auto")
     AUTO,
+
+    @SerialName("two_step")
+    TWO_STEP,
 
     @SerialName("hosted")
     HOSTED,

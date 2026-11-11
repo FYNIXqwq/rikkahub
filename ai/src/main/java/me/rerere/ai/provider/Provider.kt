@@ -4,8 +4,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import me.rerere.ai.core.ReasoningLevel
-import me.rerere.ai.core.Tool
 import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.ImageGenSize
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.StreamChunk
@@ -74,6 +74,8 @@ data class TextGenerationParams(
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
     val sessionId: String? = Uuid.random().toString(),
+    @kotlinx.serialization.Transient
+    val imageGenerationPhase: ImageGenerationPhase? = null,
 )
 
 @Serializable

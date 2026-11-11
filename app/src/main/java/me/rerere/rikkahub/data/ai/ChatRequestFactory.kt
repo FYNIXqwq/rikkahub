@@ -20,6 +20,7 @@ import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.ImageGenerationExecutionMode
 import me.rerere.ai.provider.IndependentImageToolSession
+import me.rerere.ai.provider.TwoStepImageSession
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ModelType
@@ -151,6 +152,11 @@ class ChatRequestFactory(
         val imageOptions = turn.model.imageGenerationOptions
         val imageEnabled = BuiltInTools.ImageGeneration in turn.model.tools
         val independent = imageEnabled && imageOptions.usesIndependentRequests(turn.providerSetting)
+        val twoStep = imageEnabled && imageOptions.usesTwoStepRequests(turn.providerSetting)
+        check(!imageEnabled || imageOptions.executionMode != ImageGenerationExecutionMode.TWO_STEP || twoStep) {
+            "两步原生生图需要启用 Responses API 的 OpenAI API Key 提供商，并支持结构化输出"
+        }
+        val twoStepSession = if (twoStep) TwoStepImageSession(imageOptions) else null
         check(!imageEnabled || imageOptions.executionMode != ImageGenerationExecutionMode.INDEPENDENT || independent) {
             "独立生图需要支持 Images API 的 OpenAI API Key 提供商，并启用 Responses API"
         }
@@ -203,20 +209,22 @@ class ChatRequestFactory(
                 val step = buildStep(turn, messages, processingStatus, tools, imageSession)
                 return if (imageSession != null) StepRequest(
                     step.messages, imageSession.prepareParams(step.params),
-                ) else step
+                ) else twoStepSession?.prepareStep(step) ?: step
             }
 
             override suspend fun previewStep(message: UIMessage, newPartsFrom: Int) =
-                message.transformNewParts(newPartsFrom) {
+                (twoStepSession?.previewStep(message, newPartsFrom) ?: message).transformNewParts(newPartsFrom) {
                     it.visualTransforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                 }
 
             override suspend fun finishStep(message: UIMessage, newPartsFrom: Int) =
-                message.transformNewParts(newPartsFrom) {
+                (twoStepSession?.finishStep(message, newPartsFrom) ?: message).transformNewParts(newPartsFrom) {
                     it.transforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                         .visualTransforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                         .onGenerationFinish(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                 }
+
+            override suspend fun shouldContinue(message: UIMessage) = twoStepSession?.shouldContinue(message) == true
 
             override suspend fun pendingParts() = takePendingParts()
 
@@ -264,7 +272,11 @@ class ChatRequestFactory(
             // The summary must remain text even when the chat's image tool is configured as forced.
             it.copy(customBody = it.customBody.filterNot { body -> body.key == "tool_choice" } +
                 CustomBody("tool_choice", JsonPrimitive("none")))
-        } ?: step.params
+        } ?: step.params.let {
+            it.copy(model = it.model.copy(tools = it.model.tools - BuiltInTools.ImageGeneration),
+                customBody = it.customBody.filterNot { body -> body.key == "tool_choice" } +
+                    CustomBody("tool_choice", JsonPrimitive("none")))
+        }
         // 压缩指令不经过输入转换器，模板转换器会把其中的花括号当成模板语法
         val result = withRetry(
             policy = turn.settings.retryPolicy(),

@@ -55,10 +55,11 @@ class IndependentImageToolTest {
     private val api = ResponseAPI(OkHttpClient())
 
     @Test
-    fun `auto mode separates image 25 for API key Responses providers and hosted mode remains available`() {
-        assertTrue(ImageGenerationOptions().usesIndependentRequests(setting))
+    fun `auto mode uses native two step generation while independent mode remains explicit`() {
+        assertTrue(ImageGenerationOptions().usesTwoStepRequests(setting))
+        assertFalse(ImageGenerationOptions().usesIndependentRequests(setting))
         for (imageModel in listOf("gpt-image-2", "gpt-image-2-2026-04-21")) {
-            assertTrue(ImageGenerationOptions(model = imageModel).usesIndependentRequests(setting))
+            assertTrue(ImageGenerationOptions(model = imageModel).usesTwoStepRequests(setting))
             assertFalse(ImageGenerationOptions(model = imageModel, executionMode = ImageGenerationExecutionMode.HOSTED)
                 .usesIndependentRequests(setting))
         }
@@ -67,7 +68,7 @@ class IndependentImageToolTest {
         assertFalse(ImageGenerationOptions().usesIndependentRequests(ProviderSetting.Google()))
         assertFalse(ImageGenerationOptions(executionMode = ImageGenerationExecutionMode.HOSTED).usesIndependentRequests(setting))
         assertFalse(ImageGenerationOptions(model = "gpt-image-2.6-sunburst").usesIndependentRequests(setting))
-        assertTrue(ImageGenerationOptions(model = "gpt-image-2.5-flare-2026-09-08").usesIndependentRequests(setting))
+        assertTrue(ImageGenerationOptions(model = "gpt-image-2.5-flare-2026-09-08").usesTwoStepRequests(setting))
         assertFalse(ImageGenerationOptions(model = "gpt-image-2.5-custom").usesIndependentRequests(setting))
         assertTrue(ImageGenerationOptions(model = "custom", executionMode = ImageGenerationExecutionMode.INDEPENDENT)
             .usesIndependentRequests(setting))
